@@ -15,20 +15,13 @@ import {
   Square,
   Upload,
   Volume2,
-  Settings,
-  ChevronRight,
   Loader2,
-  CheckCircle2,
-  AlertCircle,
   X,
   FileUp,
   Headphones,
 } from "lucide-react";
 import { toast } from "sonner";
-
-// ElevenLabs API configuration
-const ELEVENLABS_API_KEY = "sk_2b54f867aefad08ae6e0fa4c9caeb100f506d3adfccdda70";
-const ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
+import { trpc } from "@/lib/trpc";
 
 // Animation variants
 const fadeInUp = {
@@ -62,6 +55,35 @@ export default function Home() {
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // TTS mutation using backend proxy
+  const ttsMutation = trpc.tts.convert.useMutation({
+    onSuccess: (data) => {
+      // Convert base64 to blob URL
+      const byteCharacters = atob(data.audio);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: data.contentType });
+      const url = URL.createObjectURL(blob);
+      
+      setAudioUrl(url);
+      if (audioRef.current) {
+        audioRef.current.src = url;
+        audioRef.current.play();
+        setAppState("playing");
+        setStatusMessage("Playing...");
+      }
+    },
+    onError: (error) => {
+      console.error("TTS Error:", error);
+      setAppState("error");
+      setStatusMessage("Failed to generate audio");
+      toast.error("Failed to generate audio. Please try again.");
+    },
+  });
 
   // Handle file upload
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,44 +123,6 @@ export default function Home() {
     });
   };
 
-  // Convert text to speech using ElevenLabs
-  const convertToSpeech = async (text: string): Promise<string> => {
-    setAppState("processing");
-    setStatusMessage("Converting to audio...");
-
-    // Chunk text if too long (ElevenLabs has limits)
-    const maxChars = 5000;
-    const textToConvert = text.length > maxChars ? text.substring(0, maxChars) : text;
-
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-      {
-        method: "POST",
-        headers: {
-          "Accept": "audio/mpeg",
-          "Content-Type": "application/json",
-          "xi-api-key": ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          text: textToConvert,
-          model_id: "eleven_monolingual_v1",
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error("Failed to convert text to speech");
-    }
-
-    const audioBlob = await response.blob();
-    const url = URL.createObjectURL(audioBlob);
-    return url;
-  };
-
   // Play audio
   const handlePlay = async () => {
     if (!document) {
@@ -148,18 +132,17 @@ export default function Home() {
 
     try {
       if (!audioUrl) {
-        const url = await convertToSpeech(document.content);
-        setAudioUrl(url);
+        setAppState("processing");
+        setStatusMessage("Converting to audio...");
         
+        // Use the backend TTS proxy
+        ttsMutation.mutate({ text: document.content });
+      } else {
         if (audioRef.current) {
-          audioRef.current.src = url;
+          await audioRef.current.play();
+          setAppState("playing");
+          setStatusMessage("Playing...");
         }
-      }
-
-      if (audioRef.current) {
-        await audioRef.current.play();
-        setAppState("playing");
-        setStatusMessage("Playing...");
       }
     } catch (error) {
       setAppState("error");
@@ -373,7 +356,7 @@ export default function Home() {
                         onClick={appState === "playing" ? handlePause : handlePlay}
                         disabled={appState === "processing" || appState === "uploading"}
                       >
-                        {appState === "processing" ? (
+                        {appState === "processing" || ttsMutation.isPending ? (
                           <Loader2 className="w-8 h-8 animate-spin" />
                         ) : appState === "playing" ? (
                           <Pause className="w-8 h-8" />
@@ -393,7 +376,7 @@ export default function Home() {
                     </div>
 
                     {/* Status */}
-                    {appState === "processing" && (
+                    {(appState === "processing" || ttsMutation.isPending) && (
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
