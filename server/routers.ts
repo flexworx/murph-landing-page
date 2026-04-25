@@ -6,20 +6,34 @@ import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Chatterbox TTS — self-hosted, OpenAI-compatible API
-// Runs as a Docker service at TTS_API_URL (default: http://chatterbox:8880)
+// TTS Provider: Chatterbox (primary, self-hosted) or Hume AI (optional cloud)
+// Switch with env var: TTS_PROVIDER=hume  (default: chatterbox)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CHATTERBOX_VOICES = [
-  { id: "default",  name: "Default",  category: "built-in" },
-  { id: "male_1",   name: "Marcus",   category: "built-in" },
-  { id: "female_1", name: "Aria",     category: "built-in" },
-  { id: "male_2",   name: "James",    category: "built-in" },
-  { id: "female_2", name: "Nova",     category: "built-in" },
-  { id: "male_3",   name: "Oliver",   category: "built-in" },
-  { id: "female_3", name: "Sage",     category: "built-in" },
+  { id: "default",  name: "Default",  category: "chatterbox" },
+  { id: "male_1",   name: "Marcus",   category: "chatterbox" },
+  { id: "female_1", name: "Aria",     category: "chatterbox" },
+  { id: "male_2",   name: "James",    category: "chatterbox" },
+  { id: "female_2", name: "Nova",     category: "chatterbox" },
+  { id: "male_3",   name: "Oliver",   category: "chatterbox" },
+  { id: "female_3", name: "Sage",     category: "chatterbox" },
 ];
 
+const HUME_VOICES = [
+  { id: "ITO",       name: "Ito",       category: "hume" },
+  { id: "KORA",      name: "Kora",      category: "hume" },
+  { id: "DACHER",    name: "Dacher",    category: "hume" },
+  { id: "AURA",      name: "Aura",      category: "hume" },
+  { id: "FINN",      name: "Finn",      category: "hume" },
+  { id: "WHIMSY",    name: "Whimsy",    category: "hume" },
+  { id: "STELLA",    name: "Stella",    category: "hume" },
+  { id: "SUNNY",     name: "Sunny",     category: "hume" },
+];
+
+/**
+ * Split text into sentence-boundary chunks of at most maxChars characters.
+ */
 function chunkText(text: string, maxChars = 4500): string[] {
   if (text.length <= maxChars) return [text];
   const sentences = text.match(/[^.!?]+[.!?]+[\s]*/g) ?? [text];
@@ -37,6 +51,7 @@ function chunkText(text: string, maxChars = 4500): string[] {
   return chunks;
 }
 
+// ── Chatterbox TTS (OpenAI-compatible /v1/audio/speech) ──────────────────────
 async function callChatterboxTTS(text: string, voice: string): Promise<ArrayBuffer> {
   const url = `${ENV.ttsApiUrl}/v1/audio/speech`;
   const response = await fetch(url, {
@@ -46,9 +61,55 @@ async function callChatterboxTTS(text: string, voice: string): Promise<ArrayBuff
   });
   if (!response.ok) {
     const err = await response.text().catch(() => "");
-    throw new Error(`TTS service error ${response.status}: ${err}`);
+    throw new Error(`Chatterbox TTS error ${response.status}: ${err}`);
   }
   return response.arrayBuffer();
+}
+
+// ── Hume AI TTS (optional cloud fallback) ────────────────────────────────────
+async function callHumeTTS(text: string, voice: string): Promise<ArrayBuffer> {
+  if (!ENV.humeApiKey) {
+    throw new Error("HUME_API_KEY is not configured — falling back to Chatterbox");
+  }
+  const response = await fetch("https://api.hume.ai/v0/tts", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Hume-Api-Key": ENV.humeApiKey,
+    },
+    body: JSON.stringify({
+      utterances: [{ text, voice: { name: voice } }],
+      format: { type: "mp3" },
+      num_channels: 1,
+      sample_rate: 24000,
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.text().catch(() => "");
+    throw new Error(`Hume TTS error ${response.status}: ${err}`);
+  }
+  // Hume returns JSON with base64 audio
+  const data = await response.json() as { generations: Array<{ audio: string }> };
+  const base64 = data.generations?.[0]?.audio;
+  if (!base64) throw new Error("Hume TTS returned no audio");
+  return Buffer.from(base64, "base64").buffer as ArrayBuffer;
+}
+
+/**
+ * Route TTS call to the active provider.
+ * Chatterbox is always primary. Hume is used only when TTS_PROVIDER=hume.
+ * If Hume fails, automatically falls back to Chatterbox.
+ */
+async function synthesizeSpeech(text: string, voice: string): Promise<ArrayBuffer> {
+  if (ENV.ttsProvider === "hume" && ENV.humeApiKey) {
+    try {
+      return await callHumeTTS(text, voice);
+    } catch (err) {
+      console.warn("[TTS] Hume failed, falling back to Chatterbox:", err);
+      return callChatterboxTTS(text, "default");
+    }
+  }
+  return callChatterboxTTS(text, voice);
 }
 
 export const appRouter = router({
@@ -63,6 +124,7 @@ export const appRouter = router({
     }),
   }),
 
+  // ── Text-to-Speech ──────────────────────────────────────────────────────
   tts: router({
     convert: publicProcedure
       .input(z.object({
@@ -74,7 +136,7 @@ export const appRouter = router({
         const chunks = chunkText(text);
         const audioBuffers: ArrayBuffer[] = [];
         for (const chunk of chunks) {
-          audioBuffers.push(await callChatterboxTTS(chunk, voiceId));
+          audioBuffers.push(await synthesizeSpeech(chunk, voiceId));
         }
         const totalLength = audioBuffers.reduce((s, b) => s + b.byteLength, 0);
         const combined = new Uint8Array(totalLength);
@@ -87,12 +149,25 @@ export const appRouter = router({
           audio: Buffer.from(combined).toString("base64"),
           contentType: "audio/mpeg",
           chunks: chunks.length,
+          provider: ENV.ttsProvider,
         };
       }),
 
-    voices: publicProcedure.query(() => CHATTERBOX_VOICES),
+    voices: publicProcedure.query(() => {
+      // Return voices for the active provider
+      return ENV.ttsProvider === "hume" && ENV.humeApiKey
+        ? HUME_VOICES
+        : CHATTERBOX_VOICES;
+    }),
+
+    // Returns which provider is currently active
+    provider: publicProcedure.query(() => ({
+      active: ENV.ttsProvider,
+      humeAvailable: Boolean(ENV.humeApiKey),
+    })),
   }),
 
+  // ── Speech-to-Text (faster-whisper — self-hosted) ───────────────────────
   stt: router({
     transcribe: publicProcedure
       .input(z.object({
