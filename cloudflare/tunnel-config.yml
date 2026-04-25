@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Cloudflare Tunnel config for thynx.ai
+#
+# Prerequisites:
+#   1. Install cloudflared on your Dell VM:
+#      curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+#      chmod +x /usr/local/bin/cloudflared
+#
+#   2. Authenticate:
+#      cloudflared tunnel login
+#
+#   3. Create the tunnel:
+#      cloudflared tunnel create thynx
+#      (This generates a credentials file — copy the tunnel ID below)
+#
+#   4. Copy credentials file to this directory:
+#      cp ~/.cloudflared/<TUNNEL_ID>.json ./cloudflare/
+#
+#   5. Update TUNNEL_ID below with your actual tunnel ID
+#
+#   6. In Cloudflare DNS dashboard, add CNAME:
+#      thynx.ai     → <TUNNEL_ID>.cfargotunnel.com
+#      www.thynx.ai → <TUNNEL_ID>.cfargotunnel.com
+#
+#   7. Run the tunnel:
+#      cloudflared tunnel --config ./cloudflare/tunnel-config.yml run
+#
+#   8. Or run as a systemd service (recommended):
+#      cloudflared service install
+# ─────────────────────────────────────────────────────────────────────────────
+
+tunnel: REPLACE_WITH_YOUR_TUNNEL_ID
+credentials-file: /home/YOUR_USERNAME/.cloudflared/REPLACE_WITH_YOUR_TUNNEL_ID.json
+
+ingress:
+  # Route thynx.ai and www.thynx.ai to local nginx
+  - hostname: thynx.ai
+    service: http://localhost:80
+
+  - hostname: www.thynx.ai
+    service: http://localhost:80
+
+  # Catch-all (required by cloudflared)
+  - service: http_status:404

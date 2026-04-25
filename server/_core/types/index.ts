@@ -1,0 +1,2 @@
+// Shared server types
+export {};

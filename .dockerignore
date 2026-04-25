@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.gitignore
+*.md
+.env
+.env.*
+!.env.example
+.manus-logs
+cloudflare
+nginx
+docker-compose.yml
+*.log
+.DS_Store

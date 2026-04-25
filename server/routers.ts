@@ -1,99 +1,125 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 
-// ElevenLabs API configuration - stored server-side for security
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "sk_2b54f867aefad08ae6e0fa4c9caeb100f506d3adfccdda70";
-const ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
+// ─────────────────────────────────────────────────────────────────────────────
+// Chatterbox TTS — self-hosted, OpenAI-compatible API
+// Runs as a Docker service at TTS_API_URL (default: http://chatterbox:8880)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CHATTERBOX_VOICES = [
+  { id: "default",  name: "Default",  category: "built-in" },
+  { id: "male_1",   name: "Marcus",   category: "built-in" },
+  { id: "female_1", name: "Aria",     category: "built-in" },
+  { id: "male_2",   name: "James",    category: "built-in" },
+  { id: "female_2", name: "Nova",     category: "built-in" },
+  { id: "male_3",   name: "Oliver",   category: "built-in" },
+  { id: "female_3", name: "Sage",     category: "built-in" },
+];
+
+function chunkText(text: string, maxChars = 4500): string[] {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.match(/[^.!?]+[.!?]+[\s]*/g) ?? [text];
+  const chunks: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if ((current + sentence).length > maxChars) {
+      if (current) chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+async function callChatterboxTTS(text: string, voice: string): Promise<ArrayBuffer> {
+  const url = `${ENV.ttsApiUrl}/v1/audio/speech`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "tts-1", input: text, voice, response_format: "mp3" }),
+  });
+  if (!response.ok) {
+    const err = await response.text().catch(() => "");
+    throw new Error(`TTS service error ${response.status}: ${err}`);
+  }
+  return response.arrayBuffer();
+}
 
 export const appRouter = router({
   system: systemRouter,
+
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
+      return { success: true } as const;
     }),
   }),
 
-  // Text-to-Speech router using ElevenLabs
   tts: router({
     convert: publicProcedure
       .input(z.object({
-        text: z.string().min(1).max(10000),
+        text: z.string().min(1).max(200000),
         voiceId: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
-        const { text, voiceId } = input;
-        const voice = voiceId || ELEVENLABS_VOICE_ID;
-        
-        // Chunk text if too long (ElevenLabs has limits)
-        const maxChars = 5000;
-        const textToConvert = text.length > maxChars ? text.substring(0, maxChars) : text;
-
-        const response = await fetch(
-          `https://api.elevenlabs.io/v1/text-to-speech/${voice}`,
-          {
-            method: "POST",
-            headers: {
-              "Accept": "audio/mpeg",
-              "Content-Type": "application/json",
-              "xi-api-key": ELEVENLABS_API_KEY,
-            },
-            body: JSON.stringify({
-              text: textToConvert,
-              model_id: "eleven_monolingual_v1",
-              voice_settings: {
-                stability: 0.5,
-                similarity_boost: 0.75,
-              },
-            }),
-          }
-        );
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error("ElevenLabs API error:", errorText);
-          throw new Error(`Failed to convert text to speech: ${response.status}`);
+        const { text, voiceId = "default" } = input;
+        const chunks = chunkText(text);
+        const audioBuffers: ArrayBuffer[] = [];
+        for (const chunk of chunks) {
+          audioBuffers.push(await callChatterboxTTS(chunk, voiceId));
         }
-
-        // Convert audio to base64 for transmission
-        const audioBuffer = await response.arrayBuffer();
-        const base64Audio = Buffer.from(audioBuffer).toString('base64');
-        
+        const totalLength = audioBuffers.reduce((s, b) => s + b.byteLength, 0);
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const buf of audioBuffers) {
+          combined.set(new Uint8Array(buf), offset);
+          offset += buf.byteLength;
+        }
         return {
-          audio: base64Audio,
+          audio: Buffer.from(combined).toString("base64"),
           contentType: "audio/mpeg",
+          chunks: chunks.length,
         };
       }),
-      
-    // Get available voices
-    voices: publicProcedure.query(async () => {
-      const response = await fetch(
-        "https://api.elevenlabs.io/v1/voices",
-        {
-          headers: {
-            "xi-api-key": ELEVENLABS_API_KEY,
-          },
+
+    voices: publicProcedure.query(() => CHATTERBOX_VOICES),
+  }),
+
+  stt: router({
+    transcribe: publicProcedure
+      .input(z.object({
+        audioBase64: z.string(),
+        mimeType: z.string().default("audio/webm"),
+        language: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { audioBase64, mimeType, language } = input;
+        const audioBuffer = Buffer.from(audioBase64, "base64");
+        const ext = mimeType.includes("mp3") ? "mp3"
+          : mimeType.includes("wav") ? "wav"
+          : mimeType.includes("ogg") ? "ogg"
+          : "webm";
+        const formData = new FormData();
+        formData.append("file", new Blob([audioBuffer], { type: mimeType }), `audio.${ext}`);
+        formData.append("model", "whisper-1");
+        if (language) formData.append("language", language);
+        const url = `${ENV.sttApiUrl}/v1/audio/transcriptions`;
+        const response = await fetch(url, { method: "POST", body: formData });
+        if (!response.ok) {
+          const err = await response.text().catch(() => "");
+          throw new Error(`STT service error ${response.status}: ${err}`);
         }
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch voices");
-      }
-
-      const data = await response.json();
-      return data.voices.map((v: any) => ({
-        id: v.voice_id,
-        name: v.name,
-        category: v.category,
-      }));
-    }),
+        const result = await response.json() as { text: string };
+        return { text: result.text };
+      }),
   }),
 });
 

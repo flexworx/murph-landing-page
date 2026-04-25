@@ -1,0 +1,98 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thynx — Self-Hosted Voice App Stack
+# Runs on your Dell R7625 VM behind Cloudflare tunnel
+#
+# Services:
+#   thynx      — Node.js app (React frontend + tRPC API)  → port 3000
+#   chatterbox — Self-hosted TTS (OpenAI-compatible API)  → port 8880
+#   whisper    — Self-hosted STT (faster-whisper)         → port 9000
+#   nginx      — Reverse proxy for thynx.ai               → port 80
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Logs:   docker compose logs -f thynx
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Thynx App ──────────────────────────────────────────────────────────────
+  thynx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: thynx
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      TTS_API_URL: "http://chatterbox:8880"
+      STT_API_URL: "http://whisper:9000"
+    depends_on:
+      - chatterbox
+      - whisper
+    networks:
+      - thynx-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/trpc/system.health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Chatterbox TTS (self-hosted, OpenAI-compatible) ───────────────────────
+  chatterbox:
+    image: ghcr.io/resemble-ai/chatterbox:latest
+    container_name: chatterbox
+    restart: unless-stopped
+    environment:
+      - CHATTERBOX_PORT=8880
+    volumes:
+      - chatterbox-models:/root/.cache/chatterbox
+    networks:
+      - thynx-net
+    # CPU-only by default; uncomment below for GPU acceleration on your EPYC
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ── faster-whisper STT (self-hosted, OpenAI-compatible) ───────────────────
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: whisper
+    restart: unless-stopped
+    environment:
+      - WHISPER__MODEL=base.en
+      - WHISPER__INFERENCE_DEVICE=cpu
+    volumes:
+      - whisper-models:/root/.cache/huggingface
+    networks:
+      - thynx-net
+    # For GPU: change image to fedirz/faster-whisper-server:latest-cuda
+
+  # ── Nginx reverse proxy ────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: thynx-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/thynx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - thynx
+    networks:
+      - thynx-net
+
+networks:
+  thynx-net:
+    driver: bridge
+
+volumes:
+  chatterbox-models:
+  whisper-models:
