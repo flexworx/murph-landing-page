@@ -1,5 +1,5 @@
 /**
- * Auth SDK stub — Manus OAuth removed.
+ * Auth SDK stub — OAuth removed.
  * Thynx is self-hosted and open access (no login required).
  * Extend this to add JWT or session-based auth if needed.
  */

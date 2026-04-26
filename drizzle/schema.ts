@@ -1,7 +1,7 @@
 import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
- * Core user table — minimal, no Manus openId field.
+ * Core user table — minimal, no legacy openId field.
  */
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
