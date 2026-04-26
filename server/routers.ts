@@ -6,18 +6,18 @@ import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TTS Provider: Chatterbox (primary, self-hosted) or Hume AI (optional cloud)
-// Switch with env var: TTS_PROVIDER=hume  (default: chatterbox)
+// TTS Provider: Piper (primary, self-hosted, free) or Hume AI (optional cloud)
+// Switch with env var: TTS_PROVIDER=hume  (default: piper)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CHATTERBOX_VOICES = [
-  { id: "default",  name: "Default",  category: "chatterbox" },
-  { id: "male_1",   name: "Marcus",   category: "chatterbox" },
-  { id: "female_1", name: "Aria",     category: "chatterbox" },
-  { id: "male_2",   name: "James",    category: "chatterbox" },
-  { id: "female_2", name: "Nova",     category: "chatterbox" },
-  { id: "male_3",   name: "Oliver",   category: "chatterbox" },
-  { id: "female_3", name: "Sage",     category: "chatterbox" },
+const PIPER_VOICES = [
+  { id: "en_US-lessac-medium",   name: "Lessac (US)",   category: "piper" },
+  { id: "en_US-amy-medium",      name: "Amy (US)",      category: "piper" },
+  { id: "en_US-ryan-high",       name: "Ryan (US)",     category: "piper" },
+  { id: "en_US-joe-medium",      name: "Joe (US)",      category: "piper" },
+  { id: "en_GB-alan-medium",     name: "Alan (UK)",     category: "piper" },
+  { id: "en_GB-southern_english_female-low", name: "Sophie (UK)", category: "piper" },
+  { id: "en_US-kusal-medium",    name: "Kusal (US)",    category: "piper" },
 ];
 
 const HUME_VOICES = [
@@ -51,17 +51,19 @@ function chunkText(text: string, maxChars = 4500): string[] {
   return chunks;
 }
 
-// ── Chatterbox TTS (OpenAI-compatible /v1/audio/speech) ──────────────────────
-async function callChatterboxTTS(text: string, voice: string): Promise<ArrayBuffer> {
-  const url = `${ENV.ttsApiUrl}/v1/audio/speech`;
-  const response = await fetch(url, {
+// ── Piper TTS (Wyoming protocol HTTP wrapper) ────────────────────────────────
+async function callPiperTTS(text: string, voice: string): Promise<ArrayBuffer> {
+  // Piper Wyoming server exposes a simple HTTP endpoint: POST /api/tts?voice=<voice>
+  const url = `${ENV.ttsApiUrl}/api/tts`;
+  const params = new URLSearchParams({ voice });
+  const response = await fetch(`${url}?${params}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "tts-1", input: text, voice, response_format: "mp3" }),
+    headers: { "Content-Type": "text/plain" },
+    body: text,
   });
   if (!response.ok) {
     const err = await response.text().catch(() => "");
-    throw new Error(`Chatterbox TTS error ${response.status}: ${err}`);
+    throw new Error(`Piper TTS error ${response.status}: ${err}`);
   }
   return response.arrayBuffer();
 }
@@ -97,19 +99,19 @@ async function callHumeTTS(text: string, voice: string): Promise<ArrayBuffer> {
 
 /**
  * Route TTS call to the active provider.
- * Chatterbox is always primary. Hume is used only when TTS_PROVIDER=hume.
- * If Hume fails, automatically falls back to Chatterbox.
+ * Piper is always primary. Hume is used only when TTS_PROVIDER=hume.
+ * If Hume fails, automatically falls back to Piper.
  */
 async function synthesizeSpeech(text: string, voice: string): Promise<ArrayBuffer> {
   if (ENV.ttsProvider === "hume" && ENV.humeApiKey) {
     try {
       return await callHumeTTS(text, voice);
     } catch (err) {
-      console.warn("[TTS] Hume failed, falling back to Chatterbox:", err);
-      return callChatterboxTTS(text, "default");
+      console.warn("[TTS] Hume failed, falling back to Piper:", err);
+      return callPiperTTS(text, "en_US-lessac-medium");
     }
   }
-  return callChatterboxTTS(text, voice);
+  return callPiperTTS(text, voice);
 }
 
 export const appRouter = router({
@@ -157,7 +159,7 @@ export const appRouter = router({
       // Return voices for the active provider
       return ENV.ttsProvider === "hume" && ENV.humeApiKey
         ? HUME_VOICES
-        : CHATTERBOX_VOICES;
+        : PIPER_VOICES;
     }),
 
     // Returns which provider is currently active

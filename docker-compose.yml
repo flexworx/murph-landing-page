@@ -1,14 +1,12 @@
-version: "3.9"
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Thynx — Self-Hosted Voice App Stack
 # Runs on your Dell R7625 VM behind Cloudflare tunnel
 #
 # Services:
 #   thynx      — Node.js app (React frontend + tRPC API)  → port 3000
-#   chatterbox — Self-hosted TTS (OpenAI-compatible API)  → port 8880
-#   whisper    — Self-hosted STT (faster-whisper)         → port 9000
-#   nginx      — Reverse proxy for thynx.ai               → port 80
+#   piper      — Self-hosted TTS (Piper, OpenAI-compatible) → port 8880
+#   whisper    — Self-hosted STT (faster-whisper)           → port 9000
+#   nginx      — Reverse proxy for thynx.ai                 → port 80
 #
 # Start:  docker compose up -d
 # Stop:   docker compose down
@@ -28,10 +26,10 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-      TTS_API_URL: "http://chatterbox:8880"
+      TTS_API_URL: "http://piper:8880"
       STT_API_URL: "http://whisper:9000"
     depends_on:
-      - chatterbox
+      - piper
       - whisper
     networks:
       - thynx-net
@@ -41,29 +39,24 @@ services:
       timeout: 10s
       retries: 3
 
-  # ── Chatterbox TTS (self-hosted, OpenAI-compatible) ───────────────────────
-  chatterbox:
-    image: ghcr.io/resemble-ai/chatterbox:latest
-    container_name: chatterbox
+  # ── Piper TTS (self-hosted, free, public Docker Hub image) ────────────────
+  # Piper is a fast, high-quality neural TTS engine by Rhasspy
+  # Voices: https://huggingface.co/rhasspy/piper-voices
+  piper:
+    image: rhasspy/wyoming-piper:latest
+    container_name: piper
     restart: unless-stopped
-    environment:
-      - CHATTERBOX_PORT=8880
+    command: --voice en_US-lessac-medium
+    ports:
+      - "8880:10200"
     volumes:
-      - chatterbox-models:/root/.cache/chatterbox
+      - piper-voices:/data
     networks:
       - thynx-net
-    # CPU-only by default; uncomment below for GPU acceleration on your EPYC
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
 
   # ── faster-whisper STT (self-hosted, OpenAI-compatible) ───────────────────
   whisper:
-    image: fedirz/faster-whisper-server:latest-cpu
+    image: fedirz/faster-whisper-server:0.6.0-rc.3-cpu
     container_name: whisper
     restart: unless-stopped
     environment:
@@ -73,7 +66,6 @@ services:
       - whisper-models:/root/.cache/huggingface
     networks:
       - thynx-net
-    # For GPU: change image to fedirz/faster-whisper-server:latest-cuda
 
   # ── Nginx reverse proxy ────────────────────────────────────────────────────
   nginx:
@@ -94,5 +86,5 @@ networks:
     driver: bridge
 
 volumes:
-  chatterbox-models:
+  piper-voices:
   whisper-models:
