@@ -39,20 +39,28 @@ services:
       timeout: 10s
       retries: 3
 
-  # ── Piper TTS (self-hosted, free, public Docker Hub image) ────────────────
-  # Piper is a fast, high-quality neural TTS engine by Rhasspy
-  # Voices: https://huggingface.co/rhasspy/piper-voices
+  # ── Piper TTS HTTP server (custom wrapper with REST API) ────────────────────
+  # Wraps piper-tts Python package with FastAPI: POST /api/tts?voice=<voice>
+  # Compatible with callPiperTTS() in server/routers.ts
   piper:
-    image: rhasspy/wyoming-piper:latest
+    build:
+      context: ./piper-http
+      dockerfile: Dockerfile
     container_name: piper
     restart: unless-stopped
-    command: --voice en_US-lessac-medium
+    environment:
+      VOICES_DIR: /data/voices
     ports:
-      - "8880:10200"
+      - "8880:8880"
     volumes:
-      - piper-voices:/data
+      - piper-voices:/data/voices
     networks:
       - thynx-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ── faster-whisper STT (self-hosted, OpenAI-compatible) ───────────────────
   whisper:
